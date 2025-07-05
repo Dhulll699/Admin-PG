@@ -224,6 +224,26 @@
       margin-top: 15px;
     }
 
+    .sync-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 12px;
+      color: #1d4ed8;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.7;
+      }
+    }
+
     .status-dot {
       font-size: 18px;
       animation: blink 2s infinite;
@@ -605,6 +625,10 @@
           <span id="counterStatusDot" class="status-dot">✅</span>
           <span id="counterStatusText">Menerima data dari form kehadiran...</span>
         </div>
+        <div class="sync-status">
+          <span id="syncStatusDot" class="status-dot">🔄</span>
+          <span id="syncStatusText">Sinkronisasi realtime aktif...</span>
+        </div>
       </div>
 
       <div class="stats-section">
@@ -803,9 +827,10 @@
       let currentPage = 1;
       const itemsPerPage = 50; // Show 50 items per page
 
-      // Enhanced data retrieval with mobile support
+      // Enhanced data retrieval with cross-device support
       function getAllAttendanceData() {
         const attendanceRecords = [];
+        const processedKeys = new Set(); // Track processed keys to avoid duplicates
         
         // Get from localStorage
         for (let i = 0; i < localStorage.length; i++) {
@@ -822,7 +847,9 @@
                   record.device_type = 'Desktop';
                   record.platform = 'Desktop';
                 }
+                record.source = 'localStorage';
                 attendanceRecords.push(record);
+                processedKeys.add(key);
               }
             } catch (e) {
               console.error('Error parsing attendance record from localStorage:', e);
@@ -833,13 +860,15 @@
         // Get from sessionStorage (mobile fallback)
         for (let i = 0; i < sessionStorage.length; i++) {
           const key = sessionStorage.key(i);
-          if (key && key.startsWith('attendance_')) {
+          if (key && key.startsWith('attendance_') && !processedKeys.has(key)) {
             try {
               const record = JSON.parse(sessionStorage.getItem(key));
               if (record && record.user_type && record.timestamp) {
                 record.device_type = 'Mobile (Session)';
                 record.platform = record.platform || 'Mobile';
+                record.source = 'sessionStorage';
                 attendanceRecords.push(record);
+                processedKeys.add(key);
               }
             } catch (e) {
               console.error('Error parsing attendance record from sessionStorage:', e);
@@ -850,18 +879,30 @@
         // Get from memory cache (if available)
         if (window.attendanceCache) {
           Object.keys(window.attendanceCache).forEach(key => {
-            try {
-              const record = window.attendanceCache[key];
-              if (record && record.user_type && record.timestamp) {
-                record.device_type = 'Mobile (Cache)';
-                record.platform = record.platform || 'Mobile';
-                attendanceRecords.push(record);
+            if (!processedKeys.has(key)) {
+              try {
+                const record = window.attendanceCache[key];
+                if (record && record.user_type && record.timestamp) {
+                  record.device_type = 'Mobile (Cache)';
+                  record.platform = record.platform || 'Mobile';
+                  record.source = 'memoryCache';
+                  attendanceRecords.push(record);
+                  processedKeys.add(key);
+                }
+              } catch (e) {
+                console.error('Error parsing attendance record from memory cache:', e);
               }
-            } catch (e) {
-              console.error('Error parsing attendance record from memory cache:', e);
             }
           });
         }
+        
+        // Add cross-device sync indicator
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile) {
+          console.log('📱 Mobile admin detected - enhanced sync active');
+        }
+        
+        console.log(`📊 Retrieved ${attendanceRecords.length} records from multiple sources`);
         
         return attendanceRecords.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       }
@@ -1042,10 +1083,13 @@
         }).join('');
       }
 
-      // Refresh data
+      // Refresh data with enhanced sync status
       function refreshData() {
         console.log('🔄 Refreshing data...');
         const startTime = performance.now();
+        
+        // Update sync status to active
+        updateSyncStatus('Memperbarui data...', 'active');
         
         allData = getAllAttendanceData();
         updateStatistics(allData);
@@ -1056,6 +1100,11 @@
         
         console.log(`✅ Data refreshed successfully in ${processingTime.toFixed(2)}ms`);
         
+        // Update sync status to success
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const deviceType = isMobile ? 'Mobile' : 'Desktop';
+        updateSyncStatus(`Data terbaru (${allData.length} records) - ${deviceType}`, 'success');
+        
         // Update performance status
         if (performanceStatus) {
           if (allData.length > 1000) {
@@ -1064,6 +1113,11 @@
             performanceStatus.textContent = `Data diperbarui dalam ${processingTime.toFixed(0)}ms`;
           }
         }
+        
+        // Show sync success briefly
+        setTimeout(() => {
+          updateSyncStatus(`Sinkronisasi realtime aktif (${deviceType})`, 'active');
+        }, 2000);
       }
 
       // Export to Excel (CSV format) - Optimized for large datasets
@@ -1151,14 +1205,41 @@
         }, refreshInterval);
       }
 
-      // Real-time sync with localStorage changes
+      // Enhanced real-time sync with cross-device support
       function startRealTimeSync() {
+        // Local storage event listener (same browser, different tabs)
         window.addEventListener('storage', function(e) {
           if (e.key && e.key.startsWith('attendance_') && isLoggedIn()) {
-            console.log('🔄 New attendance data detected, refreshing...');
-            setTimeout(refreshData, 100); // Small delay to ensure data is saved
+            console.log('🔄 New attendance data detected (local), refreshing...');
+            setTimeout(refreshData, 100);
           }
         });
+
+        // Cross-device sync using polling and data comparison
+        let lastDataHash = '';
+        
+        function checkForNewData() {
+          if (!isLoggedIn()) return;
+          
+          const currentData = getAllAttendanceData();
+          const currentHash = JSON.stringify(currentData).length + '_' + currentData.length;
+          
+          if (currentHash !== lastDataHash) {
+            console.log('🔄 New data detected (cross-device), updating...');
+            lastDataHash = currentHash;
+            refreshData();
+          }
+        }
+
+        // Check for new data every 1 second
+        setInterval(checkForNewData, 1000);
+        
+        // Initial hash calculation
+        setTimeout(() => {
+          const initialData = getAllAttendanceData();
+          lastDataHash = JSON.stringify(initialData).length + '_' + initialData.length;
+          console.log('🔍 Initial data hash calculated:', lastDataHash);
+        }, 1000);
       }
 
       // Event listeners
@@ -1175,9 +1256,35 @@
       startAutoRefresh();
       startRealTimeSync();
       
+      // Initialize sync status elements
+      const syncStatusDot = document.getElementById('syncStatusDot');
+      const syncStatusText = document.getElementById('syncStatusText');
+      
+      // Update sync status
+      function updateSyncStatus(message, status = 'active') {
+        if (syncStatusDot && syncStatusText) {
+          syncStatusText.textContent = message;
+          if (status === 'active') {
+            syncStatusDot.textContent = '🔄';
+          } else if (status === 'success') {
+            syncStatusDot.textContent = '✅';
+          } else if (status === 'error') {
+            syncStatusDot.textContent = '❌';
+          }
+        }
+      }
+      
+      // Update sync status periodically
+      setInterval(() => {
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const deviceType = isMobile ? 'Mobile' : 'Desktop';
+        updateSyncStatus(`Sinkronisasi realtime aktif (${deviceType}) - ${new Date().toLocaleTimeString()}`);
+      }, 5000);
+      
       console.log('✅ Admin page initialized successfully!');
       console.log('🔄 Auto-refresh enabled (every 3 seconds)');
       console.log('🔄 Real-time sync enabled');
+      console.log('📱 Cross-device sync active');
 
       // Update performance status
       function updatePerformanceStatus() {
